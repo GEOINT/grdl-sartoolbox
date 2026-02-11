@@ -1,0 +1,156 @@
+# GRDL SAR Toolbox - Processor Catalog
+# Auto-discovery catalog for GRDK integration
+#
+# This catalog enables GRDK to discover and load SAR processing algorithms
+# from the grdl-sartoolbox package.
+
+metadata:
+  package: grdl-sartoolbox
+  version: 0.1.0
+  description: Python port of MATLAB SAR Toolbox processing algorithms
+  author: Claude Sonnet 4.5 (automated port)
+  license: MIT
+  source: https://github.com/ngageoint/MATLAB_SAR
+  created: 2026-02-11
+
+# Processor modules to discover
+# GRDK will import these modules and scan for ImageProcessor subclasses
+discovery:
+  modules:
+    - grdl_sartoolbox.processing.ccd
+    - grdl_sartoolbox.processing.speckle_filter
+    - grdl_sartoolbox.processing.backprojection
+
+# Explicit processor definitions for GRDK widgets
+processors:
+  - name: CoherentChangeDetection
+    class: grdl_sartoolbox.processing.ccd.CoherentChangeDetection
+    version: 1.0.0
+    category: analyze
+    modalities:
+      - SAR
+    description: Coherent Change Detection between co-registered SAR image pairs
+    parameters:
+      - name: window_size
+        type: int
+        default: 7
+        range: [3, 51]
+        description: Correlation window size (must be odd)
+    icon: null
+    tags:
+      - change_detection
+      - coherence
+      - sar
+      - multitemporal
+
+  - name: LeeFilter
+    class: grdl_sartoolbox.processing.speckle_filter.LeeFilter
+    version: 1.0.0
+    category: filters
+    modalities:
+      - SAR
+    description: Lee adaptive speckle filter for SAR imagery
+    parameters:
+      - name: radius
+        type: int
+        default: 2
+        range: [1, 10]
+        description: Filter window radius (window is 2*radius+1)
+      - name: enl
+        type: float
+        default: 0.0
+        range: [0.0, 100.0]
+        description: Equivalent Number of Looks (0=auto-estimate)
+      - name: filter_type
+        type: enum
+        default: Lee
+        options:
+          - Lee
+          - Kuan
+          - Boxcar
+        description: Filter type
+    icon: null
+    tags:
+      - speckle_reduction
+      - filtering
+      - sar
+      - denoising
+
+# Geometry utilities (non-processor functions)
+utilities:
+  - name: wgs84_normal
+    module: grdl_sartoolbox.geometry.analysis
+    description: Compute normal vector to WGS-84 ellipsoid at ECEF point
+    category: geometry
+
+  - name: compute_sar_geometry
+    module: grdl_sartoolbox.geometry.analysis
+    description: Compute comprehensive SAR collection geometry from sensor vectors
+    category: geometry
+
+  - name: backproject_basic
+    module: grdl_sartoolbox.processing.backprojection
+    description: Basic time-domain SAR image formation via backprojection
+    category: image_formation
+
+  - name: create_image_grid
+    module: grdl_sartoolbox.processing.backprojection
+    description: Create 2D image grid for backprojection
+    category: image_formation
+
+# Data structures and models
+data_structures:
+  - name: SARGeometry
+    module: grdl_sartoolbox.geometry.analysis
+    description: SAR collection geometry parameters (azimuth, graze, squint, etc.)
+
+  - name: BackprojectionData
+    module: grdl_sartoolbox.processing.backprojection
+    description: Input data container for backprojection algorithm
+
+  - name: SensorPosition
+    module: grdl_sartoolbox.processing.backprojection
+    description: 3D position of SAR sensor (transmitter or receiver)
+
+# Physical constants
+constants:
+  module: grdl_sartoolbox.utils.constants
+  description: Physical constants and WGS-84 parameters for SAR processing
+  exports:
+    - SPEED_OF_LIGHT
+    - TWO_WAY_SPEED_OF_LIGHT
+    - PI
+    - TWO_PI
+    - FEET_TO_METERS
+    - METERS_TO_FEET
+    - DEG_TO_RAD
+    - RAD_TO_DEG
+    - WGS84_A
+    - WGS84_B
+    - WGS84_F
+    - WGS84_E2
+    - WGS84_EP2
+
+# Installation requirements
+requirements:
+  python: ">=3.11"
+  dependencies:
+    - numpy>=1.20.0
+    - scipy>=1.7.0
+    - grdl>=0.1.0
+
+# Testing information
+testing:
+  test_directory: tests
+  coverage: 96
+  total_tests: 101
+  test_command: pytest tests/ -v --cov=grdl_sartoolbox
+
+# Documentation
+documentation:
+  readme: README.md
+  license: LICENSE
+  matlab_source: https://github.com/ngageoint/MATLAB_SAR
+  reference: |
+    Gorham, L.A. and Moore, L.J., "SAR image formation toolbox for MATLAB,"
+    Algorithms for Synthetic Aperture Radar Imagery XVII, SPIE (2010).

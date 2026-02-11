@@ -1,0 +1,16 @@
+# Include catalog for GRDK auto-discovery
+include catalog.yaml
+
+# Include documentation
+include README.md
+include LICENSE
+include CLAUDE.md
+
+# Include test data if any
+recursive-include tests *.py
+recursive-include tests/fixtures *
+
+# Exclude compiled files
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .DS_Store
