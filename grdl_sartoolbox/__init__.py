@@ -8,21 +8,19 @@ the MATLAB SAR Toolbox (https://github.com/ngageoint/MATLAB_SAR).
 Modules
 -------
 processing : Core SAR processing algorithms (CCD, PFA, filtering, etc.)
-geometry : Geometry analysis and projection utilities
+geometry : Geometry analysis, coordinate transforms, and projections
+visualization : Remap and display functions for SAR imagery
+io : File format readers (DTED) and writers (KML, shapefile)
 utils : Constants and helper functions
 
 License
 -------
 MIT License
 Copyright (c) 2024 geoint.org
-
-Created
--------
-2026-02-11
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from grdl_sartoolbox import processing, geometry, utils
+from grdl_sartoolbox import processing, geometry, visualization, utils
 
-__all__ = ["processing", "geometry", "utils", "__version__"]
+__all__ = ["processing", "geometry", "visualization", "io", "utils", "__version__"]

@@ -8,10 +8,6 @@ License
 -------
 MIT License
 Copyright (c) 2024 geoint.org
-
-Created
--------
-2026-02-11
 """
 
 from grdl_sartoolbox.utils.constants import (
@@ -28,6 +24,11 @@ from grdl_sartoolbox.utils.constants import (
     doppler_frequency_to_velocity,
 )
 
+from grdl_sartoolbox.utils.misc import (
+    fast_running_mean,
+    local_sum,
+)
+
 __all__ = [
     "SPEED_OF_LIGHT",
     "TWO_WAY_SPEED_OF_LIGHT",
@@ -40,4 +41,6 @@ __all__ = [
     "frequency_from_wavelength",
     "range_resolution",
     "doppler_frequency_to_velocity",
+    "fast_running_mean",
+    "local_sum",
 ]

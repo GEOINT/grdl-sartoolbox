@@ -6,46 +6,27 @@ Implements the Coherent Change Detection (CCD) algorithm as described in
 Jakowatz, et al., "Spotlight-mode Synthetic Aperture Radar: A Signal Processing
 Approach" (equation 5.102).
 
-CCD computes the normalized cross-correlation (coherence) between two complex
-SAR images over a sliding window. High coherence indicates stable regions, while
-low coherence indicates change.
+Also includes:
+- Noise-aware CCD (ccdnoisemem) - ML estimator accounting for noise
+- SCCM (Signal Correlation Change Metric) - Mitchell's improved CCD metric
+- Angle-aware CCD (ccdmem_angle) - CCD with rotation support
 
 Attribution
 -----------
 Ported from MATLAB SAR Toolbox (https://github.com/ngageoint/MATLAB_SAR)
 Original MATLAB implementation by Wade Schwartzkopf, NGA/IDT
 
-Dependencies
-------------
-numpy - Array operations and complex number handling
-scipy.signal - 2D convolution for windowed correlation
-
-Author
-------
-Claude Sonnet 4.5 (automated port)
-
 License
 -------
 MIT License
 Copyright (c) 2024 geoint.org
-
-Created
--------
-2026-02-11
-
-Modified
---------
-2026-02-11
 """
 
-# Standard library
 from typing import Annotated, Tuple, Optional
-
-# Third-party
 import numpy as np
 from scipy import signal
+from scipy.ndimage import rotate as ndimage_rotate
 
-# GRDL internal
 from grdl.image_processing.base import ImageProcessor
 from grdl.image_processing.params import Desc, Range
 from grdl.image_processing.versioning import processor_version, processor_tags
@@ -57,23 +38,7 @@ from grdl.vocabulary import ImageModality, ProcessorCategory
 # ===================================================================
 
 def _validate_complex_2d(image: np.ndarray, param_name: str = "image") -> None:
-    """
-    Validate that *image* is a 2D complex numpy array.
-
-    Parameters
-    ----------
-    image : np.ndarray
-        Array to validate.
-    param_name : str
-        Name of parameter for error messages.
-
-    Raises
-    ------
-    TypeError
-        If *image* is not a numpy array or not complex-valued.
-    ValueError
-        If *image* is not 2D.
-    """
+    """Validate that *image* is a 2D complex numpy array."""
     if not isinstance(image, np.ndarray):
         raise TypeError(
             f"{param_name} must be a numpy ndarray, got {type(image).__name__}"
@@ -90,8 +55,309 @@ def _validate_complex_2d(image: np.ndarray, param_name: str = "image") -> None:
         )
 
 
+def _ensure_window_tuple(corr_window_size):
+    """Ensure window size is a 2-tuple (rows, cols)."""
+    if np.isscalar(corr_window_size):
+        return (int(corr_window_size), int(corr_window_size))
+    return (int(corr_window_size[0]), int(corr_window_size[1]))
+
+
 # ===================================================================
-# CoherentChangeDetection
+# Standalone CCD functions
+# ===================================================================
+
+def ccd_mem(
+    reference_image: np.ndarray,
+    match_image: np.ndarray,
+    corr_window_size: int = 7
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Basic coherent change detection between two registered complex images.
+
+    Ported from MATLAB ccdmem.m.
+
+    Parameters
+    ----------
+    reference_image : np.ndarray
+        First complex image, shape (rows, cols).
+    match_image : np.ndarray
+        Second complex image, shape (rows, cols).
+    corr_window_size : int or tuple of int
+        Correlation window size. Scalar or (rows, cols).
+
+    Returns
+    -------
+    ccd_out : np.ndarray
+        Coherence magnitude in [0, 1], dtype float64.
+    phase_out : np.ndarray
+        Phase in radians [-pi, pi], dtype float64.
+    """
+    win = _ensure_window_tuple(corr_window_size)
+    window = np.ones(win, dtype=np.float64)
+
+    conjf_times_g = signal.convolve2d(
+        np.conj(reference_image) * match_image,
+        window, mode='same', boundary='symm'
+    )
+    f_squared = signal.convolve2d(
+        np.abs(reference_image) ** 2,
+        window, mode='same', boundary='symm'
+    )
+    g_squared = signal.convolve2d(
+        np.abs(match_image) ** 2,
+        window, mode='same', boundary='symm'
+    )
+
+    denom = np.sqrt(f_squared * g_squared)
+    ccd_out = np.abs(conjf_times_g) / np.where(denom > 0, denom, 1.0)
+    ccd_out[~np.isfinite(ccd_out)] = 0.0
+    ccd_out = np.clip(ccd_out, 0.0, 1.0)
+
+    phase_out = np.angle(conjf_times_g)
+    phase_out[~np.isfinite(phase_out)] = 0.0
+
+    return ccd_out, phase_out
+
+
+def ccd_noise_mem(
+    reference_image: np.ndarray,
+    match_image: np.ndarray,
+    corr_window_size: int = 7,
+    reference_noise_var: float = 0.0,
+    match_noise_var: float = 0.0
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Noise-aware coherent change detection (maximum likelihood estimator).
+
+    Implements CCD equation from Wahl, Jakowatz, Yocky, "A New Optimal
+    Change Estimator for SAR Coherent Change Detection". When noise
+    variances are zero, reverts to traditional CCD.
+
+    Ported from MATLAB ccdnoisemem.m.
+
+    Parameters
+    ----------
+    reference_image : np.ndarray
+        First complex image, shape (rows, cols).
+    match_image : np.ndarray
+        Second complex image, shape (rows, cols).
+    corr_window_size : int or tuple of int
+        Correlation window size. Scalar or (rows, cols).
+    reference_noise_var : float
+        Noise variance of reference image. Default 0 (traditional CCD).
+    match_noise_var : float
+        Noise variance of match image. Default 0 (traditional CCD).
+
+    Returns
+    -------
+    ccd_out : np.ndarray
+        Coherence magnitude in [0, 1], dtype float64.
+    phase_out : np.ndarray
+        Phase in radians [-pi, pi], dtype float64.
+    """
+    if reference_noise_var == 0.0 and match_noise_var == 0.0:
+        return ccd_mem(reference_image, match_image, corr_window_size)
+
+    win = _ensure_window_tuple(corr_window_size)
+    window = np.ones(win, dtype=np.float64)
+    n_pixels = win[0] * win[1]
+
+    conjf_times_g = signal.convolve2d(
+        np.conj(reference_image) * match_image,
+        window, mode='same', boundary='symm'
+    )
+    f_squared = signal.convolve2d(
+        np.abs(reference_image) ** 2,
+        window, mode='same', boundary='symm'
+    )
+    g_squared = signal.convolve2d(
+        np.abs(match_image) ** 2,
+        window, mode='same', boundary='symm'
+    )
+
+    # Noise-corrected CCD: 2|<f*g>| / (|f|^2 + |g|^2 - N*(sigma_f + sigma_g))
+    denom = f_squared + g_squared - n_pixels * (reference_noise_var + match_noise_var)
+    ccd_out = 2.0 * np.abs(conjf_times_g) / np.where(denom > 0, denom, 1.0)
+    ccd_out[~np.isfinite(ccd_out)] = 0.0
+    # Values outside [0,1] are set to 1 (denotes uncertainty)
+    ccd_out[(ccd_out < 0) | (ccd_out > 1)] = 1.0
+
+    phase_out = np.angle(conjf_times_g)
+    phase_out[~np.isfinite(phase_out)] = 0.0
+
+    return ccd_out, phase_out
+
+
+def sccm(
+    reference_image: np.ndarray,
+    match_image: np.ndarray,
+    corr_window_size: int = 7,
+    reference_noise_var: float = 0.0,
+    match_noise_var: float = 0.0
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Signal Correlation Change Metric (SCCM).
+
+    Computes SCCM as described in Tom Mitchell's "An Improved CCD Metric"
+    (2016 March Tech Forum). SCCM better separates signal correlation
+    from noise effects compared to traditional CCD.
+
+    Ported from MATLAB SCCM.m.
+
+    Parameters
+    ----------
+    reference_image : np.ndarray
+        First complex image, shape (rows, cols).
+    match_image : np.ndarray
+        Second complex image, shape (rows, cols).
+    corr_window_size : int or tuple of int
+        Correlation window size.
+    reference_noise_var : float
+        Noise variance of reference image.
+    match_noise_var : float
+        Noise variance of match image.
+
+    Returns
+    -------
+    sccm_out : np.ndarray
+        SCCM values. Negative values (-100) indicate no-signal pixels.
+    angle_out : np.ndarray
+        Phase angle from standard CCD.
+    """
+    win = _ensure_window_tuple(corr_window_size)
+    window = np.ones(win, dtype=np.float64)
+    n_pixels = win[0] * win[1]
+
+    # Standard CCD for the angle map
+    _, angle_out = ccd_mem(reference_image, match_image, corr_window_size)
+
+    # Cross-correlations
+    r_star_m = signal.convolve2d(
+        np.conj(reference_image) * match_image,
+        window, mode='same', boundary='symm'
+    )
+    m_star_r = signal.convolve2d(
+        np.conj(match_image) * reference_image,
+        window, mode='same', boundary='symm'
+    )
+
+    # Auto-correlations
+    r_squared = signal.convolve2d(
+        np.conj(reference_image) * reference_image,
+        window, mode='same', boundary='symm'
+    ).real
+    m_squared = signal.convolve2d(
+        np.conj(match_image) * match_image,
+        window, mode='same', boundary='symm'
+    ).real
+
+    # Signal variances (subtract noise)
+    sig_r = r_squared / (2 * n_pixels) - reference_noise_var
+    sig_m = m_squared / (2 * n_pixels) - match_noise_var
+
+    # SCCM
+    denom = 4 * n_pixels * np.sqrt(np.maximum(sig_r * sig_m, 0))
+    sccm_out = np.real(r_star_m + m_star_r) / np.where(denom > 0, denom, 1.0)
+
+    # Flag no-signal pixels
+    sccm_out[sig_r <= 0] = -100.0
+    sccm_out[sig_m <= 0] = -100.0
+
+    return sccm_out, angle_out
+
+
+def ccd_mem_angle(
+    reference_image: np.ndarray,
+    match_image: np.ndarray,
+    corr_window_size: int = 7,
+    angle: float = 0.0,
+    rotate_output: bool = True,
+    noise_var: float = 0.0,
+    metric: str = 'ccd'
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    CCD with rotation support for oriented correlation windows.
+
+    Rotates images before computing CCD, then optionally rotates the
+    result back to the original orientation.
+
+    Ported from MATLAB ccdmem_angle.m.
+
+    Parameters
+    ----------
+    reference_image : np.ndarray
+        First complex image, shape (rows, cols).
+    match_image : np.ndarray
+        Second complex image, shape (rows, cols).
+    corr_window_size : int or tuple of int
+        Correlation window size.
+    angle : float
+        Rotation angle in degrees.
+    rotate_output : bool
+        If True, rotate output back to original orientation.
+    noise_var : float
+        Noise variance (same for both images). Default 0.
+    metric : str
+        CCD metric: 'ccd' (traditional), 'noise' (noise-aware),
+        or 'sccm' (Mitchell's metric).
+
+    Returns
+    -------
+    ccd_out : np.ndarray
+        Coherence/SCCM values.
+    phase_out : np.ndarray
+        Phase values.
+    """
+    win = _ensure_window_tuple(corr_window_size)
+
+    # Handle 90/270 degree rotations as simple array ops
+    needs_rotate = True
+    if angle % 90 == 0:
+        needs_rotate = False
+        if angle == 90 or angle == 270:
+            win = (win[1], win[0])  # Flip window dimensions
+
+    # Rotate if needed (non-axis-aligned angle)
+    if needs_rotate:
+        ny1, nx1 = reference_image.shape
+        ref_rot = ndimage_rotate(reference_image.real, angle, reshape=True) + \
+                  1j * ndimage_rotate(reference_image.imag, angle, reshape=True)
+        match_rot = ndimage_rotate(match_image.real, angle, reshape=True) + \
+                    1j * ndimage_rotate(match_image.imag, angle, reshape=True)
+    else:
+        ref_rot = reference_image
+        match_rot = match_image
+
+    # Compute CCD with selected metric
+    if noise_var == 0:
+        ccd_out, phase_out = ccd_mem(ref_rot, match_rot, win)
+    elif metric.lower() == 'sccm':
+        ccd_out, phase_out = sccm(ref_rot, match_rot, win, noise_var, noise_var)
+    else:
+        ccd_out, phase_out = ccd_noise_mem(ref_rot, match_rot, win, noise_var, noise_var)
+
+    # Rotate output back if requested
+    if rotate_output:
+        if needs_rotate:
+            ccd_rot = ndimage_rotate(ccd_out, -angle, reshape=True)
+            phase_rot = ndimage_rotate(phase_out, -angle, reshape=True)
+            ny2, nx2 = ccd_rot.shape
+            xoff = (nx2 - nx1) // 2
+            yoff = (ny2 - ny1) // 2
+            ccd_out = ccd_rot[yoff:yoff + ny1, xoff:xoff + nx1]
+            phase_out = phase_rot[yoff:yoff + ny1, xoff:xoff + nx1]
+        elif angle == 90:
+            ccd_out = np.rot90(ccd_out, 1)
+            phase_out = np.rot90(phase_out, 1)
+        elif angle == 270:
+            ccd_out = np.rot90(ccd_out, 3)
+            phase_out = np.rot90(phase_out, 3)
+
+    return ccd_out, phase_out
+
+
+# ===================================================================
+# CoherentChangeDetection Processor
 # ===================================================================
 
 @processor_version('1.0.0')
@@ -109,54 +375,14 @@ class CoherentChangeDetection(ImageProcessor):
     where 1 indicates perfect correlation (no change) and 0 indicates complete
     decorrelation (change).
 
-    The algorithm implements the CCD equation from Jakowatz et al.:
-
-        coherence(i,j) = |sum(conj(f) * g)| / sqrt(sum(|f|^2) * sum(|g|^2))
-
-    where f is the reference image, g is the match image, and the sums are computed
-    over a local window of size window_size × window_size centered at pixel (i,j).
-
     Parameters
     ----------
     window_size : int
         Size of the square correlation window in pixels. Must be >= 3 and odd.
-        Larger windows provide more stable coherence estimates but reduce spatial
-        resolution. Default is 7.
-
-    Raises
-    ------
-    ValueError
-        If *window_size* is < 3 or even.
-
-    Examples
-    --------
-    >>> from grdl.IO.sar import SICDReader
-    >>> from grdl_sartoolbox.processing.ccd import CoherentChangeDetection
-    >>>
-    >>> # Load two co-registered SAR images
-    >>> with SICDReader('image1.nitf') as reader:
-    ...     image1 = reader.read()  # complex64 array
-    >>> with SICDReader('image2.nitf') as reader:
-    ...     image2 = reader.read()  # complex64 array
-    >>>
-    >>> # Compute coherence
-    >>> ccd = CoherentChangeDetection(window_size=11)
-    >>> coherence = ccd.apply(image1, image2)  # float32 in [0, 1]
-    >>>
-    >>> # Optionally get both coherence and phase
-    >>> coherence, phase = ccd.apply_with_phase(image1, image2)
-
-    Notes
-    -----
-    - Input images must be co-registered (aligned) for meaningful results
-    - The coherence is computed as magnitude; phase is optionally available
-    - Edge pixels within window_size//2 of borders use 'same' mode padding
-    - Division by zero is handled by setting coherence to 0 at those pixels
     """
 
-    __gpu_compatible__ = True  # Pure numpy/scipy operations
+    __gpu_compatible__ = True
 
-    # -- Annotated scalar field for GUI introspection (__param_specs__) --
     window_size: Annotated[
         int,
         Range(min=3, max=51),
@@ -164,43 +390,16 @@ class CoherentChangeDetection(ImageProcessor):
     ] = 7
 
     def __init__(self, window_size: int = 7) -> None:
-        """
-        Initialize CoherentChangeDetection processor.
-
-        Parameters
-        ----------
-        window_size : int
-            Size of the square correlation window. Must be >= 3 and odd.
-            Default is 7.
-
-        Raises
-        ------
-        ValueError
-            If window_size is < 3 or even.
-        """
         if window_size < 3:
-            raise ValueError(
-                f"window_size must be >= 3, got {window_size}"
-            )
+            raise ValueError(f"window_size must be >= 3, got {window_size}")
         if window_size % 2 == 0:
-            raise ValueError(
-                f"window_size must be odd for symmetric window, got {window_size}"
-            )
-
+            raise ValueError(f"window_size must be odd, got {window_size}")
         self._window_size = window_size
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def window_size(self) -> int:
         """Correlation window size in pixels."""
         return self._window_size
-
-    # ------------------------------------------------------------------
-    # Core algorithm
-    # ------------------------------------------------------------------
 
     def apply(
         self,
@@ -214,35 +413,15 @@ class CoherentChangeDetection(ImageProcessor):
         Parameters
         ----------
         reference_image : np.ndarray
-            First complex image, shape (rows, cols). Complex64 or complex128.
+            First complex image, shape (rows, cols).
         match_image : np.ndarray
-            Second complex image, shape (rows, cols). Must match reference shape.
-        **kwargs
-            Optional parameter overrides (e.g., window_size=11).
+            Second complex image, shape (rows, cols).
 
         Returns
         -------
         np.ndarray
-            Coherence magnitude, shape (rows, cols), dtype float32.
-            Values in [0, 1] where 1 = perfect correlation, 0 = no correlation.
-
-        Raises
-        ------
-        TypeError
-            If images are not complex numpy arrays.
-        ValueError
-            If images are not 2D or have different shapes.
-
-        Examples
-        --------
-        >>> image1 = np.random.randn(512, 512) + 1j*np.random.randn(512, 512)
-        >>> image2 = image1.copy()  # Identical images
-        >>> ccd = CoherentChangeDetection(window_size=7)
-        >>> coherence = ccd.apply(image1, image2)
-        >>> np.mean(coherence)  # Should be ~1.0 for identical images
-        0.999...
+            Coherence magnitude in [0, 1], dtype float32.
         """
-        # Validate inputs
         _validate_complex_2d(reference_image, "reference_image")
         _validate_complex_2d(match_image, "match_image")
 
@@ -252,57 +431,11 @@ class CoherentChangeDetection(ImageProcessor):
                 f"match: {match_image.shape}"
             )
 
-        # Resolve parameters (allows runtime override via kwargs)
         params = self._resolve_params(kwargs)
         window_size = params['window_size']
 
-        # Create uniform window (ones matrix)
-        window = np.ones((window_size, window_size), dtype=np.float64)
-
-        # Port of MATLAB ccdmem.m algorithm:
-        # conjf_times_g = conv2(conj(reference_image).*match_image, ones(window_size), 'same')
-        # f_squared = conv2(abs(reference_image).^2, ones(window_size), 'same')
-        # g_squared = conv2(abs(match_image).^2, ones(window_size), 'same')
-        # ccd_out = abs(conjf_times_g)./sqrt(f_squared.*g_squared)
-        # ccd_out(~isfinite(ccd_out))=0
-
-        # Compute windowed cross-correlation: sum(conj(f) * g)
-        conjf_times_g = signal.convolve2d(
-            np.conj(reference_image) * match_image,
-            window,
-            mode='same',
-            boundary='symm'
-        )
-
-        # Compute windowed power: sum(|f|^2) and sum(|g|^2)
-        f_squared = signal.convolve2d(
-            np.abs(reference_image) ** 2,
-            window,
-            mode='same',
-            boundary='symm'
-        )
-
-        g_squared = signal.convolve2d(
-            np.abs(match_image) ** 2,
-            window,
-            mode='same',
-            boundary='symm'
-        )
-
-        # Compute coherence: |cross-correlation| / sqrt(power_f * power_g)
-        # Add small epsilon to denominator to avoid division by zero
-        epsilon = np.finfo(np.float64).tiny
-        denominator = np.sqrt(f_squared * g_squared + epsilon)
-        coherence = np.abs(conjf_times_g) / denominator
-
-        # Handle any remaining non-finite values (NaN, Inf)
-        coherence = np.where(np.isfinite(coherence), coherence, 0.0)
-
-        # Clamp to [0, 1] to handle floating-point precision issues
-        coherence = np.clip(coherence, 0.0, 1.0)
-
-        # Return as float32 (typical for image data)
-        return coherence.astype(np.float32)
+        ccd_out, _ = ccd_mem(reference_image, match_image, window_size)
+        return ccd_out.astype(np.float32)
 
     def apply_with_phase(
         self,
@@ -311,35 +444,15 @@ class CoherentChangeDetection(ImageProcessor):
         **kwargs
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Compute both coherence magnitude and phase between two SAR images.
-
-        The phase represents the interferometric phase difference between
-        the two images, useful for interferometric SAR (InSAR) applications.
-
-        Parameters
-        ----------
-        reference_image : np.ndarray
-            First complex image, shape (rows, cols).
-        match_image : np.ndarray
-            Second complex image, shape (rows, cols).
-        **kwargs
-            Optional parameter overrides (e.g., window_size=11).
+        Compute both coherence magnitude and phase.
 
         Returns
         -------
         coherence : np.ndarray
             Coherence magnitude in [0, 1], dtype float32.
         phase : np.ndarray
-            Phase in radians, range [-π, π], dtype float32.
-
-        Examples
-        --------
-        >>> ccd = CoherentChangeDetection(window_size=7)
-        >>> coherence, phase = ccd.apply_with_phase(image1, image2)
-        >>> print(f"Mean coherence: {np.mean(coherence):.3f}")
-        >>> print(f"Phase range: [{np.min(phase):.2f}, {np.max(phase):.2f}]")
+            Phase in radians [-pi, pi], dtype float32.
         """
-        # Validate inputs
         _validate_complex_2d(reference_image, "reference_image")
         _validate_complex_2d(match_image, "match_image")
 
@@ -349,47 +462,17 @@ class CoherentChangeDetection(ImageProcessor):
                 f"match: {match_image.shape}"
             )
 
-        # Resolve parameters
         params = self._resolve_params(kwargs)
         window_size = params['window_size']
 
-        # Create uniform window
-        window = np.ones((window_size, window_size), dtype=np.float64)
+        ccd_out, phase_out = ccd_mem(reference_image, match_image, window_size)
+        return ccd_out.astype(np.float32), phase_out.astype(np.float32)
 
-        # Compute windowed cross-correlation
-        conjf_times_g = signal.convolve2d(
-            np.conj(reference_image) * match_image,
-            window,
-            mode='same',
-            boundary='symm'
-        )
 
-        # Compute windowed power
-        f_squared = signal.convolve2d(
-            np.abs(reference_image) ** 2,
-            window,
-            mode='same',
-            boundary='symm'
-        )
-
-        g_squared = signal.convolve2d(
-            np.abs(match_image) ** 2,
-            window,
-            mode='same',
-            boundary='symm'
-        )
-
-        # Coherence magnitude
-        epsilon = np.finfo(np.float64).tiny
-        denominator = np.sqrt(f_squared * g_squared + epsilon)
-        coherence = np.abs(conjf_times_g) / denominator
-        coherence = np.where(np.isfinite(coherence), coherence, 0.0)
-
-        # Clamp to [0, 1] to handle floating-point precision issues
-        coherence = np.clip(coherence, 0.0, 1.0)
-
-        # Phase (angle of complex cross-correlation)
-        phase = np.angle(conjf_times_g)
-        phase = np.where(np.isfinite(phase), phase, 0.0)
-
-        return coherence.astype(np.float32), phase.astype(np.float32)
+__all__ = [
+    "CoherentChangeDetection",
+    "ccd_mem",
+    "ccd_noise_mem",
+    "sccm",
+    "ccd_mem_angle",
+]
