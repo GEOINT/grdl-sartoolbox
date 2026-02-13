@@ -43,7 +43,7 @@ import numpy as np
 from scipy import ndimage
 
 # GRDL internal
-from grdl.image_processing.base import ImageProcessor
+from grdl.image_processing.base import ImageTransform
 from grdl.image_processing.params import Desc, Range, Options
 from grdl.image_processing.versioning import processor_version, processor_tags
 from grdl.vocabulary import ImageModality, ProcessorCategory
@@ -163,7 +163,7 @@ def _estimate_enl(variance_coeff: np.ndarray, radius: int = 2) -> float:
     category=ProcessorCategory.FILTERS,
     description='Lee adaptive speckle filter for SAR imagery'
 )
-class LeeFilter(ImageProcessor):
+class LeeFilter(ImageTransform):
     """
     Lee adaptive speckle filter for SAR imagery.
 
@@ -218,7 +218,7 @@ class LeeFilter(ImageProcessor):
     - Edge pixels use reflection boundary conditions
     """
 
-    __gpu_compatible__ = True
+    __gpu_compatible__ = False  # uses scipy.ndimage (no CuPy support)
 
     # Annotated parameters
     radius: Annotated[

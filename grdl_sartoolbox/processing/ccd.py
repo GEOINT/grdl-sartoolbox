@@ -22,7 +22,9 @@ MIT License
 Copyright (c) 2024 geoint.org
 """
 
-from typing import Annotated, Tuple, Optional
+from typing import Annotated, Any, Tuple, Optional
+import dataclasses
+
 import numpy as np
 from scipy import signal
 from scipy.ndimage import rotate as ndimage_rotate
@@ -381,7 +383,7 @@ class CoherentChangeDetection(ImageProcessor):
         Size of the square correlation window in pixels. Must be >= 3 and odd.
     """
 
-    __gpu_compatible__ = True
+    __gpu_compatible__ = False  # uses scipy.signal (no CuPy support)
 
     window_size: Annotated[
         int,
@@ -395,6 +397,44 @@ class CoherentChangeDetection(ImageProcessor):
         if window_size % 2 == 0:
             raise ValueError(f"window_size must be odd, got {window_size}")
         self._window_size = window_size
+
+    def execute(
+        self,
+        metadata: Any,
+        source: np.ndarray,
+        **kwargs: Any,
+    ) -> Tuple[Any, Any]:
+        """Execute CCD via the polymorphic dispatch protocol.
+
+        CCD is a two-input processor: ``source`` maps to
+        ``reference_image``; ``match_image`` must be provided via
+        ``**kwargs``.
+
+        Parameters
+        ----------
+        metadata : ImageMetadata
+            Input image metadata.
+        source : np.ndarray
+            Reference complex SAR image.
+        **kwargs
+            Must include ``match_image``. May include ``window_size``
+            override.
+
+        Returns
+        -------
+        tuple[np.ndarray, ImageMetadata]
+            ``(coherence, updated_metadata)``
+        """
+        self._metadata = metadata
+        result = self.apply(source, **kwargs)
+        updated = dataclasses.replace(
+            metadata,
+            dtype=str(result.dtype),
+            rows=result.shape[0],
+            cols=result.shape[1],
+            bands=1,
+        )
+        return result, updated
 
     @property
     def window_size(self) -> int:
