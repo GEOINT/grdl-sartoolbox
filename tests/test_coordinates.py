@@ -21,30 +21,30 @@ class TestECFGeodesicRoundtrip:
         lat, lon, alt = 0.0, 0.0, 0.0
         x, y, z = geodetic_to_ecf(lat, lon, alt)
         lat2, lon2, alt2 = ecf_to_geodetic(x, y, z)
-        assert abs(float(lat2) - lat) < 1e-10
-        assert abs(float(lon2) - lon) < 1e-10
-        assert abs(float(alt2) - alt) < 1e-3
+        assert abs(lat2.item() - lat) < 1e-10
+        assert abs(lon2.item() - lon) < 1e-10
+        assert abs(alt2.item() - alt) < 1e-3
 
     def test_north_pole(self):
         lat, lon, alt = 90.0, 0.0, 0.0
         x, y, z = geodetic_to_ecf(lat, lon, alt)
         lat2, lon2, alt2 = ecf_to_geodetic(x, y, z)
-        assert abs(float(lat2) - lat) < 1e-10
-        assert abs(float(alt2) - alt) < 1e-3
+        assert abs(lat2.item() - lat) < 1e-10
+        assert abs(alt2.item() - alt) < 1e-3
 
     def test_south_pole(self):
         lat, lon, alt = -90.0, 0.0, 0.0
         x, y, z = geodetic_to_ecf(lat, lon, alt)
         lat2, lon2, alt2 = ecf_to_geodetic(x, y, z)
-        assert abs(float(lat2) - lat) < 1e-10
+        assert abs(lat2.item() - lat) < 1e-10
 
     def test_arbitrary_point(self):
         lat, lon, alt = 38.8977, -77.0365, 100.0  # Washington DC
         x, y, z = geodetic_to_ecf(lat, lon, alt)
         lat2, lon2, alt2 = ecf_to_geodetic(x, y, z)
-        assert abs(float(lat2) - lat) < 1e-8
-        assert abs(float(lon2) - lon) < 1e-8
-        assert abs(float(alt2) - alt) < 1e-3
+        assert abs(lat2.item() - lat) < 1e-8
+        assert abs(lon2.item() - lon) < 1e-8
+        assert abs(alt2.item() - alt) < 1e-3
 
     def test_vector_input(self):
         lats = np.array([0.0, 45.0, -30.0])
@@ -61,15 +61,15 @@ class TestECFGeodesicRoundtrip:
         x, y, z = geodetic_to_ecf(38.0, -77.0, 0.0)
         ecf = np.array([float(x), float(y), float(z)])
         lat, lon, alt = ecf_to_geodetic(ecf)
-        assert abs(float(lat) - 38.0) < 1e-8
-        assert abs(float(lon) - (-77.0)) < 1e-8
+        assert abs(lat.item() - 38.0) < 1e-8
+        assert abs(lon.item() - (-77.0)) < 1e-8
 
     def test_array_3x1_input_ecf(self):
         """Test (3,1) column vector input."""
         x, y, z = geodetic_to_ecf(38.0, -77.0, 0.0)
         ecf = np.array([[float(x)], [float(y)], [float(z)]])
         lat, lon, alt = ecf_to_geodetic(ecf)
-        assert abs(float(lat) - 38.0) < 1e-8
+        assert abs(lat.item() - 38.0) < 1e-8
 
 
 class TestNED:

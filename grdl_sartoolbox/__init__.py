@@ -19,8 +19,9 @@ MIT License
 Copyright (c) 2024 geoint.org
 """
 
-__version__ = "0.2.0"
+__version__ = "0.1.1"
 
 from grdl_sartoolbox import processing, geometry, visualization, utils
 
 __all__ = ["processing", "geometry", "visualization", "io", "utils", "__version__"]
+

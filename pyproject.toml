@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grdl-sartoolbox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python port of NGA MATLAB SAR Toolbox - SAR processing algorithms"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,7 @@ authors = [
 dependencies = [
     "numpy>=1.20.0",
     "scipy>=1.7.0",
-    "grdl>=0.1.0",
+    "grdl>=0.5.1",
 ]
 
 [project.optional-dependencies]
@@ -69,3 +69,4 @@ addopts = "-v --cov=grdl_sartoolbox --cov-report=term-missing"
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+
